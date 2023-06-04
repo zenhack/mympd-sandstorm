@@ -5,6 +5,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/base64"
+	"encoding/json"
 	"html/template"
 	"io"
 	"math"
@@ -116,7 +117,17 @@ type Server struct {
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	if req.RequestURI == "/" {
+	if req.RequestURI == "/_ipnetwork-proxy/powerbox-token" {
+		var payload struct{ Token string }
+		err := json.NewDecoder(req.Body).Decode(&payload)
+		if err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			w.Write([]byte("reading json body: " + err.Error() + "\n"))
+			return
+		}
+		// TODO: redeem token
+		return
+	} else if req.RequestURI == "/" {
 		state := mutex.With1(&s.state, func(st *State) State {
 			return *st
 		})
