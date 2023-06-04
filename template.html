@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+  <head>
+    <title>myMPD - Network Configuration</title>
+  </head>
+  <body>
+    {{ if .HasConfig }}
+      Have Config
+    {{ else if .HasNetwork  }}
+      Have Network
+    {{ else }}
+      Nada
+    {{ end }}
+  </body>
+</html>

@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	_ "embed"
+	"html/template"
 	"io"
 	"math"
 	"net"
@@ -16,9 +18,13 @@ import (
 	"zenhack.net/go/tempest/pkg/exp/sandstormhttpbridge"
 	"zenhack.net/go/util"
 	"zenhack.net/go/util/exn"
-	"zenhack.net/go/util/maybe"
 	"zenhack.net/go/util/sync/mutex"
 )
+
+//go:embed template.html
+var templateBytes string
+
+var tmpl = template.Must(template.New("netcfg").Parse(templateBytes))
 
 const host = "127.0.0.1:8000"
 
@@ -35,6 +41,18 @@ type State struct {
 	token   []byte
 	network ip.IpNetwork
 	config  Config
+}
+
+func (s State) HasNetwork() bool {
+	return s.network.IsValid()
+}
+
+func (s State) HasConfig() bool {
+	return s.config.IsValid()
+}
+
+func (s State) Ready() bool {
+	return s.HasNetwork() && s.HasConfig()
 }
 
 func restoreState(ctx context.Context, bridge bridgecp.SandstormHttpBridge) (State, error) {
@@ -70,17 +88,16 @@ func restoreIpNetwork(ctx context.Context, token []byte, bridge bridgecp.Sandsto
 }
 
 type Server struct {
-	state mutex.Mutex[maybe.Maybe[State]]
+	state mutex.Mutex[State]
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if req.RequestURI == "/" {
-		var ok bool
-		s.state.With(func(ms *maybe.Maybe[State]) {
-			_, ok = ms.Get()
+		state := mutex.With1(&s.state, func(st *State) State {
+			return *st
 		})
-		if !ok {
-			w.Write([]byte(`No IpNewtork access yet`))
+		if !state.Ready() {
+			tmpl.Execute(w, &state)
 			return
 		}
 	}
@@ -141,7 +158,7 @@ func main() {
 	srv := &Server{}
 	state, err := restoreState(ctx, bridge)
 	if err == nil {
-		srv.state = mutex.New(maybe.New(state))
+		srv.state = mutex.New(state)
 	}
 
 	http.Handle("/", srv)
