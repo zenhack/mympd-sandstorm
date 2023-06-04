@@ -12,8 +12,8 @@ import (
 	capnp "capnproto.org/go/capnp/v3"
 	"zenhack.net/go/tempest/capnp/grain"
 	"zenhack.net/go/tempest/capnp/ip"
-	bridgecp "zenhack.net/go/tempest/capnp/sandstormhttpbridge"
-	"zenhack.net/go/tempest/exp/sandstormhttpbridge"
+	bridgecp "zenhack.net/go/tempest/capnp/sandstorm-http-bridge"
+	"zenhack.net/go/tempest/pkg/exp/sandstormhttpbridge"
 	"zenhack.net/go/util"
 	"zenhack.net/go/util/exn"
 	"zenhack.net/go/util/maybe"
@@ -54,6 +54,7 @@ func restoreState(ctx context.Context, bridge bridgecp.SandstormHttpBridge) (Sta
 		return State{
 			token:   token,
 			network: network,
+			config:  cfg,
 		}
 	})
 }
@@ -65,21 +66,23 @@ func restoreIpNetwork(ctx context.Context, token []byte, bridge bridgecp.Sandsto
 		return p.SetToken(token)
 	})
 	defer rel()
-	return ip.IpNetwork(restureFut.Cap().AddRef()), nil
+	return ip.IpNetwork(restoreFut.Cap().AddRef()), nil
 }
 
 type Server struct {
-	state *mutex.Mutex[maybe.Maybe[State]]
+	state mutex.Mutex[maybe.Maybe[State]]
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	if req.RequestURI == "" {
-		var done bool
-		state.With(func(ms *maybe.Maybe[State]) {
-			_, ok := ms.Get()
-			if !ok {
-			}
+	if req.RequestURI == "/" {
+		var ok bool
+		s.state.With(func(ms *maybe.Maybe[State]) {
+			_, ok = ms.Get()
 		})
+		if !ok {
+			w.Write([]byte(`No IpNewtork access yet`))
+			return
+		}
 	}
 
 	if req.Header.Get("Upgrade") == "websocket" {
@@ -131,12 +134,16 @@ func serverError(w http.ResponseWriter, err error) {
 }
 
 func main() {
-	bridge, err := sandstormhttpbridge.Connect(context.Background())
+	ctx := context.Background()
+	bridge, err := sandstormhttpbridge.Connect(ctx)
 	util.Chkfatal(err)
 
-	srv := &Server{
-		state: mutex.New(maybe.Maybe[State]{}),
+	srv := &Server{}
+	state, err := restoreState(ctx, bridge)
+	if err == nil {
+		srv.state = mutex.New(maybe.New(state))
 	}
+
 	http.Handle("/", srv)
 	panic(http.ListenAndServe(":8001", nil))
 }
