@@ -32,6 +32,8 @@ var tmpl = template.Must(template.New("netcfg").Parse(templateBytes))
 
 const host = "127.0.0.1:8000"
 
+const tokenPath = "/var/ipnetwork-proxy/token"
+
 var (
 	dialer    = &net.Dialer{}
 	transport = &http.Transport{
@@ -80,11 +82,11 @@ var powerboxQuery = thunk.Lazy(func() string {
 	return base64.StdEncoding.EncodeToString(buf.Bytes())
 })
 
-func restoreState(ctx context.Context, bridge bridgecp.SandstormHttpBridge) (State, error) {
+func restoreState(ctx context.Context, api grain.SandstormApi) (State, error) {
 	return exn.Try(func(throw exn.Thrower) State {
-		token, err := os.ReadFile("/var/ipnetwork-proxy/token")
+		token, err := os.ReadFile(tokenPath)
 		throw(err)
-		network, err := restoreIpNetwork(ctx, token, bridge)
+		network, err := restoreIpNetwork(ctx, token, api)
 		throw(err)
 		configBytes, err := os.ReadFile("/var/ipnetwork-proxy/config")
 		throw(err)
@@ -102,30 +104,23 @@ func restoreState(ctx context.Context, bridge bridgecp.SandstormHttpBridge) (Sta
 	})
 }
 
-func restoreIpNetwork(ctx context.Context, token []byte, bridge bridgecp.SandstormHttpBridge) (ip.IpNetwork, error) {
-	apiFut, rel := bridge.GetSandstormApi(ctx, nil)
-	defer rel()
-	restoreFut, rel := apiFut.Api().Restore(ctx, func(p grain.SandstormApi_restore_Params) error {
+func restoreIpNetwork(ctx context.Context, token []byte, api grain.SandstormApi) (ip.IpNetwork, error) {
+	fut, rel := api.Restore(ctx, func(p grain.SandstormApi_restore_Params) error {
 		return p.SetToken(token)
 	})
 	defer rel()
-	return ip.IpNetwork(restoreFut.Cap().AddRef()), nil
+	return ip.IpNetwork(fut.Cap().AddRef()), nil
 }
 
 type Server struct {
-	state mutex.Mutex[State]
+	api    grain.SandstormApi
+	bridge bridgecp.SandstormHttpBridge
+	state  mutex.Mutex[State]
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if req.RequestURI == "/_ipnetwork-proxy/powerbox-token" {
-		var payload struct{ Token string }
-		err := json.NewDecoder(req.Body).Decode(&payload)
-		if err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			w.Write([]byte("reading json body: " + err.Error() + "\n"))
-			return
-		}
-		// TODO: redeem token
+		s.handlePostToken(w, req)
 		return
 	} else if req.RequestURI == "/" {
 		state := mutex.With1(&s.state, func(st *State) State {
@@ -141,6 +136,52 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		proxyWebSocket(w, req)
 	} else {
 		proxyNormalRequest(w, req)
+	}
+}
+
+func (s *Server) handlePostToken(w http.ResponseWriter, req *http.Request) {
+	ctx := req.Context()
+	var payload struct{ Token string }
+	err := json.NewDecoder(req.Body).Decode(&payload)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write([]byte("reading json body: " + err.Error() + "\n"))
+		return
+	}
+	sCtxFut, rel := s.bridge.GetSessionContext(ctx, func(p bridgecp.SandstormHttpBridge_getSessionContext_Params) error {
+		return p.SetId(req.Header.Get("X-Sandstorm-Session-Id"))
+	})
+	defer rel()
+	sCtx := sCtxFut.Context()
+	claimFut, rel := sCtx.ClaimRequest(ctx, func(p grain.SessionContext_claimRequest_Params) error {
+		return p.SetRequestToken(payload.Token)
+	})
+	defer rel()
+	claimedCap := claimFut.Cap().AddRef()
+	saveFut, rel := s.api.Save(ctx, func(p grain.SandstormApi_save_Params) error {
+		return exn.Try0(func(throw exn.Thrower) {
+			throw(p.SetCap(claimedCap.AddRef()))
+			label, err := p.NewLabel()
+			throw(err)
+			throw(label.SetDefaultText("Network access for connecting to MPD"))
+		})
+	})
+	defer rel()
+	err = exn.Try0(func(throw exn.Thrower) {
+		saveRes, err := saveFut.Struct()
+		throw(err)
+		token, err := saveRes.Token()
+		throw(err)
+		s.state.With(func(s *State) {
+			s.token = token
+			s.network = ip.IpNetwork(claimedCap)
+		})
+		// FIXME: do this write atomically:
+		throw(os.WriteFile(tokenPath, token, 0600))
+	})
+	if err != nil {
+		serverError(w, err)
+		return
 	}
 }
 
@@ -190,8 +231,15 @@ func main() {
 	bridge, err := sandstormhttpbridge.Connect(ctx)
 	util.Chkfatal(err)
 
-	srv := &Server{}
-	state, err := restoreState(ctx, bridge)
+	apiFut, rel := bridge.GetSandstormApi(ctx, nil)
+	api := apiFut.Api().AddRef()
+	go rel()
+
+	srv := &Server{
+		bridge: bridge,
+		api:    api,
+	}
+	state, err := restoreState(ctx, api)
 	if err == nil {
 		srv.state = mutex.New(state)
 	}
