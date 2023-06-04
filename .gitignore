@@ -1,1 +1,2 @@
 /mympd-proxy
+*.capnp.go
