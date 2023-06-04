@@ -4,12 +4,60 @@
     <title>myMPD - Network Configuration</title>
   </head>
   <body>
-    {{ if .HasConfig }}
-      Have Config
-    {{ else if .HasNetwork  }}
-      Have Network
+    <h1>Network Configuration</h1>
+
+    {{ if .HasNetwork  }}
+
+      <p>This grain has been granted network access. Please enter the details for
+      the MPD server to connect to.</p>
+
+      <form method="post" action="/_ipnetwork-proxy/mpd-address">
+        <label for="hostname">Hostname</label>
+        <input name="hostname" placeholder="hostname">
+        <label for="port">Port Number</label>
+        <input name="port" placeholder="6600" type="number">
+      </form>
+
     {{ else }}
-      Nada
+
+      <script>
+        window.addEventListener('message', (event) => {
+          if(event.source !== window.parent) {
+            return;
+          }
+          console.log("Got message event: ", event);
+          const token = event.data.token;
+          fetch("_ipnetwork-proxy/powerbox-token", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({Token: token}),
+          }).then((response) => {
+            console.log("Response:", response)
+          }, (error) => {
+            console.log("Error:", response)
+          })
+        })
+
+        function doRequest() {
+          window.parent.postMessage({
+            powerboxRequest: {
+              rpcId: 1,
+              query: [
+                "{{ .PowerboxQuery }}",
+              ],
+              saveLabel: {defaultText: "Network access capability, for connecting to MPD."},
+            },
+          }, "*")
+        }
+      </script>
+
+      <p>In order to use myMPD, we need to connect to an MPD server. First, we
+      need to request network access from Sandstorm.</p>
+
+      <button onclick="doRequest();">Request network access</button>
+
     {{ end }}
   </body>
 </html>

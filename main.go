@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
+	"encoding/base64"
 	"html/template"
 	"io"
 	"math"
@@ -14,11 +15,13 @@ import (
 	capnp "capnproto.org/go/capnp/v3"
 	"zenhack.net/go/tempest/capnp/grain"
 	"zenhack.net/go/tempest/capnp/ip"
+	"zenhack.net/go/tempest/capnp/powerbox"
 	bridgecp "zenhack.net/go/tempest/capnp/sandstorm-http-bridge"
 	"zenhack.net/go/tempest/pkg/exp/sandstormhttpbridge"
 	"zenhack.net/go/util"
 	"zenhack.net/go/util/exn"
 	"zenhack.net/go/util/sync/mutex"
+	"zenhack.net/go/util/thunk"
 )
 
 //go:embed template.html
@@ -54,6 +57,27 @@ func (s State) HasConfig() bool {
 func (s State) Ready() bool {
 	return s.HasNetwork() && s.HasConfig()
 }
+
+// Returns the packed, base64 encoded powerbox descriptor needed to
+// request network access. XXX: this is a bit of a hack; this really
+// has nothing to do with the State, but it's the easiest way to get this
+// into the template.
+func (s State) PowerboxQuery() string {
+	return powerboxQuery.Force()
+}
+
+var powerboxQuery = thunk.Lazy(func() string {
+	msg, seg := capnp.NewSingleSegmentMessage(nil)
+	desc, err := powerbox.NewRootPowerboxDescriptor(seg)
+	util.Chkfatal(err)
+	tags, err := desc.NewTags(1)
+	util.Chkfatal(err)
+	tag := tags.At(0)
+	tag.SetId(ip.IpNetwork_TypeID)
+	buf := &bytes.Buffer{}
+	util.Chkfatal(capnp.NewPackedEncoder(buf).Encode(msg))
+	return base64.StdEncoding.EncodeToString(buf.Bytes())
+})
 
 func restoreState(ctx context.Context, bridge bridgecp.SandstormHttpBridge) (State, error) {
 	return exn.Try(func(throw exn.Thrower) State {
