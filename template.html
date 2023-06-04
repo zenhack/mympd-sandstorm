@@ -25,7 +25,6 @@
           if(event.source !== window.parent) {
             return;
           }
-          console.log("Got message event: ", event);
           const token = event.data.token;
           fetch("_ipnetwork-proxy/powerbox-token", {
             method: "POST",
@@ -34,9 +33,13 @@
             },
             body: JSON.stringify({Token: token}),
           }).then((response) => {
-            console.log("Response:", response)
+            if(response.ok) {
+              location.reload()
+              return
+            }
+            console.error("Non-ok response posting claim token:", response)
           }, (error) => {
-            console.log("Error:", response)
+            console.error("Error posting claim token:", response)
           })
         })
 
